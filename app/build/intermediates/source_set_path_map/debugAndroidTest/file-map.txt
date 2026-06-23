@@ -1,0 +1,4 @@
+com.aolastar.hub.test.app-androidTest-0 C:\AolaStarHub\Aola-Star-Hub-Android\app\build\generated\res\resValues\androidTest\debug
+com.aolastar.hub.test.app-mergeDebugAndroidTestResources-1 C:\AolaStarHub\Aola-Star-Hub-Android\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\merged.dir
+com.aolastar.hub.test.app-mergeDebugAndroidTestResources-2 C:\AolaStarHub\Aola-Star-Hub-Android\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\stripped.dir
+com.aolastar.hub.test.app-merged_res-3 C:\AolaStarHub\Aola-Star-Hub-Android\app\build\intermediates\merged_res\debugAndroidTest

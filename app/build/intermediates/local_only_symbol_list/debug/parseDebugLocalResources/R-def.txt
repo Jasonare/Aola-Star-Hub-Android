@@ -1,0 +1,15 @@
+R_DEF: Internal format may change without notice
+local
+color black
+color white
+id loading_message
+id loading_overlay
+id loading_percent
+id loading_progress
+id loading_title
+id webview
+layout activity_main
+mipmap ic_launcher
+mipmap ic_launcher_round
+string app_name
+style Theme.AolaStarHub
