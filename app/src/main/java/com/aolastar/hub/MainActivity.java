@@ -68,20 +68,48 @@ public class MainActivity extends AppCompatActivity {
 
     private static final String REMOTE_APP_URL = "http://110.40.157.248/aola-star.html";
     private static final String RESOURCE_ZIP_FILE_NAME = "resource.zip";
+    private static final String RESOURCE_V7_ZIP_FILE_NAME = "resource-v7.zip";
     private static final String COS_RESOURCE_ZIP_URL = "https://aola-star-hub-1350639287.cos.ap-shanghai.myqcloud.com/resource.zip";
     private static final String SERVER_RESOURCE_ZIP_URL = "http://110.40.157.248/resource.zip";
+    private static final String COS_RESOURCE_V7_ZIP_URL = "https://aola-star-hub-1350639287.cos.ap-shanghai.myqcloud.com/resource-v7.zip";
+    private static final String SERVER_RESOURCE_V7_ZIP_URL = "http://110.40.157.248/resource-v7.zip";
     private static final String[] RESOURCE_ZIP_URLS = new String[] {
         COS_RESOURCE_ZIP_URL,
         SERVER_RESOURCE_ZIP_URL
     };
+    private static final String[] RESOURCE_V7_ZIP_URLS = new String[] {
+        COS_RESOURCE_V7_ZIP_URL,
+        SERVER_RESOURCE_V7_ZIP_URL
+    };
     private static final String READY_FILE = ".resource-ready.json";
     private static final String DOWNLOAD_READY_FILE = ".resource-download-ready.json";
+    private static final String DOWNLOAD_V7_READY_FILE = ".resource-v7-download-ready.json";
+    private static final String EXTRACT_READY_FILE = ".resource-extract-ready.json";
+    private static final String EXTRACT_V7_READY_FILE = ".resource-v7-extract-ready.json";
     private static final String PREFS_NAME = "aola_resource_prefs";
     private static final String PREF_DOWNLOAD_ID = "resource_download_id";
     private static final String PREF_DOWNLOAD_URL = "resource_download_url";
+    private static final String PREF_V7_DOWNLOAD_ID = "resource_v7_download_id";
+    private static final String PREF_V7_DOWNLOAD_URL = "resource_v7_download_url";
     private static final String RESOURCE_ENTRY_CHARSET = "GBK";
-    private static final int RESOURCE_READY_VERSION = 2;
+    private static final int RESOURCE_READY_VERSION = 3;
     private static final String TAG = "AolaStarHub";
+    private static final ResourcePackage BASE_RESOURCE_PACKAGE = new ResourcePackage(
+        RESOURCE_ZIP_FILE_NAME,
+        RESOURCE_ZIP_URLS,
+        DOWNLOAD_READY_FILE,
+        EXTRACT_READY_FILE,
+        PREF_DOWNLOAD_ID,
+        PREF_DOWNLOAD_URL
+    );
+    private static final ResourcePackage V7_RESOURCE_PACKAGE = new ResourcePackage(
+        RESOURCE_V7_ZIP_FILE_NAME,
+        RESOURCE_V7_ZIP_URLS,
+        DOWNLOAD_V7_READY_FILE,
+        EXTRACT_V7_READY_FILE,
+        PREF_V7_DOWNLOAD_ID,
+        PREF_V7_DOWNLOAD_URL
+    );
     private static final String ANDROID_WEB_PATCH_CSS =
         "html.android-webview,html.android-webview body{width:auto!important;min-width:100vw!important;height:auto!important;min-height:100vh!important;overflow:auto!important;-webkit-overflow-scrolling:touch!important;}" +
         "html.android-webview #app{width:max-content!important;min-width:100vw!important;min-height:100vh!important;overflow:visible!important;}" +
@@ -92,12 +120,14 @@ public class MainActivity extends AppCompatActivity {
 
     private static final Set<String> STATIC_RESOURCE_SEGMENTS = new HashSet<>(Arrays.asList(
         "BGM",
+        "badges",
         "boss-level",
         "fight-ui",
         "hub \u5b88\u62a4\u8005\u8054\u76df\u52cb\u7ae0",
         "pet-action",
         "pet-img",
         "pet-state",
+        "scene",
         "skill-effect",
         "skill-effect-fullscreen",
         "time-tunnel-environments",
@@ -105,6 +135,10 @@ public class MainActivity extends AppCompatActivity {
         "type-transparent",
         "\u5730\u53f0boss",
         "\u5c0f\u56fe\u6807",
+        "\u52cb\u7ae0",
+        "\u80cc\u5305ui",
+        "\u88c5\u5907",
+        "\u754c\u9762ui",
         "ui"
     ));
 
@@ -274,34 +308,20 @@ public class MainActivity extends AppCompatActivity {
             try {
                 File resourceDir = getResourceDir();
                 File readyFile = new File(resourceDir, READY_FILE);
-                if (isReadyFileCurrent(readyFile)) {
+                if (isReadyFileCurrent(readyFile, resourceDir)) {
                     showLoading("Local resources are ready.", 100, true);
                     loadRemoteApp();
                     return;
                 }
 
-                recreateResourceDir(resourceDir);
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    Uri zipUri = findReusableDownloadZipUri();
-                    if (zipUri == null) {
-                        zipUri = waitForDownloadManagerZip();
-                    } else {
-                        showLoading("Using existing resource.zip...", 84, true);
-                    }
-                    unzipStaticResources(zipUri, resourceDir);
+                if (!isExtractReadyFileCurrent(BASE_RESOURCE_PACKAGE, resourceDir)) {
+                    recreateResourceDir(resourceDir);
                 } else {
-                    File zipFile = getDownloadZipFile();
-                    if (!zipFile.isFile() || !isDownloadReadyFileCurrent()) {
-                        if (zipFile.exists()) zipFile.delete();
-                        deleteDownloadReadyFile();
-                        downloadFileWithFallback(zipFile);
-                        writeDownloadReadyFile();
-                    } else {
-                        showLoading("Using existing resource.zip...", 84, true);
-                    }
-                    unzipStaticResources(zipFile, resourceDir);
+                    ensureResourceDir(resourceDir);
                 }
+
+                ensureStaticResourcePackage(BASE_RESOURCE_PACKAGE, resourceDir);
+                ensureStaticResourcePackage(V7_RESOURCE_PACKAGE, resourceDir);
                 writeReadyFile(readyFile);
                 showLoading("Local resources are ready.", 100, true);
                 loadRemoteApp();
@@ -318,6 +338,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void ensureResourceDir(File resourceDir) {
+        if (!resourceDir.exists() && !resourceDir.mkdirs()) {
+            throw new IllegalStateException("Cannot create resource directory.");
+        }
+    }
+
     private void deleteRecursively(File file) {
         if (file == null || !file.exists()) return;
         if (file.isDirectory()) {
@@ -329,117 +355,133 @@ public class MainActivity extends AppCompatActivity {
         file.delete();
     }
 
-    private File getDownloadZipFile() throws Exception {
+    private void ensureStaticResourcePackage(ResourcePackage resourcePackage, File resourceDir) throws Exception {
+        if (isExtractReadyFileCurrent(resourcePackage, resourceDir)) {
+            showLoading(resourcePackage.fileName + " resources are ready.", 90, true);
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            Uri zipUri = findReusableDownloadZipUri(resourcePackage);
+            if (zipUri == null) {
+                zipUri = waitForDownloadManagerZip(resourcePackage);
+            } else {
+                showLoading("Using existing " + resourcePackage.fileName + "...", 84, true);
+            }
+            unzipStaticResources(zipUri, resourceDir, resourcePackage.fileName);
+        } else {
+            File zipFile = getDownloadZipFile(resourcePackage);
+            if (!zipFile.isFile() || !isDownloadReadyFileCurrent(resourcePackage)) {
+                if (zipFile.exists()) zipFile.delete();
+                deleteDownloadReadyFile(resourcePackage);
+                downloadFileWithFallback(resourcePackage, zipFile);
+                writeDownloadReadyFile(resourcePackage);
+            } else {
+                showLoading("Using existing " + resourcePackage.fileName + "...", 84, true);
+            }
+            unzipStaticResources(zipFile, resourceDir, resourcePackage.fileName);
+        }
+        writeExtractReadyFile(resourcePackage, resourceDir);
+    }
+
+    private File getDownloadZipFile(ResourcePackage resourcePackage) throws Exception {
         File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         if (!downloadDir.exists() && !downloadDir.mkdirs()) {
             throw new IllegalStateException("Cannot create Download directory.");
         }
-        return new File(downloadDir, RESOURCE_ZIP_FILE_NAME);
+        return new File(downloadDir, resourcePackage.fileName);
     }
 
-    private Uri createDownloadZipUri() throws Exception {
-        ContentResolver resolver = getContentResolver();
-
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Downloads.DISPLAY_NAME, RESOURCE_ZIP_FILE_NAME);
-        values.put(MediaStore.Downloads.MIME_TYPE, "application/zip");
-        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-        values.put(MediaStore.Downloads.IS_PENDING, 1);
-        Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-        if (uri == null) throw new IllegalStateException("Cannot create Download/resource.zip.");
-        return uri;
-    }
-
-    private Uri waitForDownloadManagerZip() throws Exception {
+    private Uri waitForDownloadManagerZip(ResourcePackage resourcePackage) throws Exception {
         DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
         if (manager == null) throw new IllegalStateException("Download service is unavailable.");
 
-        long downloadId = getStoredDownloadId();
-        String downloadUrl = getStoredDownloadUrl();
-        if (downloadId > 0 && !isKnownResourceZipUrl(downloadUrl)) {
+        long downloadId = getStoredDownloadId(resourcePackage);
+        String downloadUrl = getStoredDownloadUrl(resourcePackage);
+        if (downloadId > 0 && !isKnownResourceZipUrl(resourcePackage, downloadUrl)) {
             manager.remove(downloadId);
-            clearStoredDownloadId();
-            clearStoredDownloadUrl();
+            clearStoredDownloadId(resourcePackage);
+            clearStoredDownloadUrl(resourcePackage);
             downloadId = -1L;
             downloadUrl = "";
         }
 
         Uri zipUri = getCompletedDownloadUri(manager, downloadId);
         if (zipUri != null) {
-            writeDownloadReadyFile();
+            writeDownloadReadyFile(resourcePackage);
             return zipUri;
         }
 
         DownloadProgress progress = getDownloadProgress(manager, downloadId);
         if (progress == null || progress.status == DownloadManager.STATUS_FAILED) {
-            deleteDownloadReadyFile();
+            deleteDownloadReadyFile(resourcePackage);
             if (downloadId > 0) manager.remove(downloadId);
-            downloadUrl = RESOURCE_ZIP_URLS[0];
-            downloadId = enqueueResourceDownload(manager, downloadUrl);
-            storeDownloadId(downloadId);
-            storeDownloadUrl(downloadUrl);
+            downloadUrl = resourcePackage.urls[0];
+            downloadId = enqueueResourceDownload(manager, resourcePackage, downloadUrl);
+            storeDownloadId(resourcePackage, downloadId);
+            storeDownloadUrl(resourcePackage, downloadUrl);
         }
 
-        showDownloadManagerProgress(manager, downloadId);
+        showDownloadManagerProgress(manager, downloadId, resourcePackage);
         while (true) {
             zipUri = getCompletedDownloadUri(manager, downloadId);
             if (zipUri != null) {
-                writeDownloadReadyFile();
+                writeDownloadReadyFile(resourcePackage);
                 return zipUri;
             }
             progress = getDownloadProgress(manager, downloadId);
             if (progress == null || progress.status == DownloadManager.STATUS_FAILED) {
-                deleteDownloadReadyFile();
-                clearStoredDownloadId();
-                String fallbackUrl = getFallbackResourceZipUrl(downloadUrl);
+                deleteDownloadReadyFile(resourcePackage);
+                clearStoredDownloadId(resourcePackage);
+                String fallbackUrl = getFallbackResourceZipUrl(resourcePackage, downloadUrl);
                 if (fallbackUrl == null) {
-                    clearStoredDownloadUrl();
+                    clearStoredDownloadUrl(resourcePackage);
                     throw new IllegalStateException("Background download failed. Please reopen the app to retry.");
                 }
                 manager.remove(downloadId);
                 showLoading("Primary download failed, switching download source...", 1, true);
                 downloadUrl = fallbackUrl;
-                downloadId = enqueueResourceDownload(manager, downloadUrl);
-                storeDownloadId(downloadId);
-                storeDownloadUrl(downloadUrl);
-                showDownloadManagerProgress(manager, downloadId);
+                downloadId = enqueueResourceDownload(manager, resourcePackage, downloadUrl);
+                storeDownloadId(resourcePackage, downloadId);
+                storeDownloadUrl(resourcePackage, downloadUrl);
+                showDownloadManagerProgress(manager, downloadId, resourcePackage);
                 Thread.sleep(3000);
                 continue;
             }
-            showDownloadProgress(progress);
+            showDownloadProgress(progress, resourcePackage);
             Thread.sleep(3000);
         }
     }
 
-    private void showDownloadManagerProgress(DownloadManager manager, long downloadId) {
+    private void showDownloadManagerProgress(DownloadManager manager, long downloadId, ResourcePackage resourcePackage) {
         DownloadProgress progress = getDownloadProgress(manager, downloadId);
         if (progress == null) {
-            showLoading("Downloading resource.zip in background...", 1, true);
+            showLoading("Downloading " + resourcePackage.fileName + " in background...", 1, true);
             return;
         }
-        showDownloadProgress(progress);
+        showDownloadProgress(progress, resourcePackage);
     }
 
-    private void showDownloadProgress(DownloadProgress progress) {
+    private void showDownloadProgress(DownloadProgress progress, ResourcePackage resourcePackage) {
         if (progress.totalBytes > 0 && progress.downloadedBytes >= 0) {
             int percent = Math.max(1, Math.min(82, (int) ((progress.downloadedBytes * 82) / progress.totalBytes)));
-            showLoading("Downloading resource.zip " + formatMb(progress.downloadedBytes) + " / " + formatMb(progress.totalBytes), percent, false);
+            showLoading("Downloading " + resourcePackage.fileName + " " + formatMb(progress.downloadedBytes) + " / " + formatMb(progress.totalBytes), percent, false);
         } else if (progress.downloadedBytes > 0) {
-            showLoading("Downloading resource.zip, downloaded " + formatMb(progress.downloadedBytes), 8, true);
+            showLoading("Downloading " + resourcePackage.fileName + ", downloaded " + formatMb(progress.downloadedBytes), 8, true);
         } else {
-            showLoading("Downloading resource.zip in background...", 1, true);
+            showLoading("Downloading " + resourcePackage.fileName + " in background...", 1, true);
         }
     }
 
-    private long enqueueResourceDownload(DownloadManager manager, String url) {
+    private long enqueueResourceDownload(DownloadManager manager, ResourcePackage resourcePackage, String url) {
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-        request.setTitle("Aola Star Hub resource.zip");
+        request.setTitle("Aola Star Hub " + resourcePackage.fileName);
         request.setDescription("Downloading game resources");
         request.setMimeType("application/zip");
         request.setAllowedOverMetered(true);
         request.setAllowedOverRoaming(true);
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, RESOURCE_ZIP_FILE_NAME);
+        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, resourcePackage.fileName);
         return manager.enqueue(request);
     }
 
@@ -481,79 +523,97 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private long getStoredDownloadId() {
-        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getLong(PREF_DOWNLOAD_ID, -1L);
+    private static class ResourcePackage {
+        final String fileName;
+        final String[] urls;
+        final String downloadReadyFileName;
+        final String extractReadyFileName;
+        final String prefDownloadId;
+        final String prefDownloadUrl;
+
+        ResourcePackage(String fileName, String[] urls, String downloadReadyFileName, String extractReadyFileName, String prefDownloadId, String prefDownloadUrl) {
+            this.fileName = fileName;
+            this.urls = urls;
+            this.downloadReadyFileName = downloadReadyFileName;
+            this.extractReadyFileName = extractReadyFileName;
+            this.prefDownloadId = prefDownloadId;
+            this.prefDownloadUrl = prefDownloadUrl;
+        }
     }
 
-    private void storeDownloadId(long downloadId) {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putLong(PREF_DOWNLOAD_ID, downloadId).apply();
+    private long getStoredDownloadId(ResourcePackage resourcePackage) {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getLong(resourcePackage.prefDownloadId, -1L);
     }
 
-    private void clearStoredDownloadId() {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().remove(PREF_DOWNLOAD_ID).apply();
+    private void storeDownloadId(ResourcePackage resourcePackage, long downloadId) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putLong(resourcePackage.prefDownloadId, downloadId).apply();
     }
 
-    private String getStoredDownloadUrl() {
-        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(PREF_DOWNLOAD_URL, "");
+    private void clearStoredDownloadId(ResourcePackage resourcePackage) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().remove(resourcePackage.prefDownloadId).apply();
     }
 
-    private void storeDownloadUrl(String url) {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(PREF_DOWNLOAD_URL, url).apply();
+    private String getStoredDownloadUrl(ResourcePackage resourcePackage) {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(resourcePackage.prefDownloadUrl, "");
     }
 
-    private void clearStoredDownloadUrl() {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().remove(PREF_DOWNLOAD_URL).apply();
+    private void storeDownloadUrl(ResourcePackage resourcePackage, String url) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(resourcePackage.prefDownloadUrl, url).apply();
     }
 
-    private boolean isKnownResourceZipUrl(String url) {
+    private void clearStoredDownloadUrl(ResourcePackage resourcePackage) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().remove(resourcePackage.prefDownloadUrl).apply();
+    }
+
+    private boolean isKnownResourceZipUrl(ResourcePackage resourcePackage, String url) {
         if (url == null || url.isEmpty()) return false;
-        for (String resourceZipUrl : RESOURCE_ZIP_URLS) {
+        for (String resourceZipUrl : resourcePackage.urls) {
             if (resourceZipUrl.equals(url)) return true;
         }
         return false;
     }
 
     @Nullable
-    private String getFallbackResourceZipUrl(String currentUrl) {
+    private String getFallbackResourceZipUrl(ResourcePackage resourcePackage, String currentUrl) {
         if (currentUrl == null || currentUrl.isEmpty()) return null;
-        for (int i = 0; i < RESOURCE_ZIP_URLS.length - 1; i++) {
-            if (RESOURCE_ZIP_URLS[i].equals(currentUrl)) return RESOURCE_ZIP_URLS[i + 1];
+        for (int i = 0; i < resourcePackage.urls.length - 1; i++) {
+            if (resourcePackage.urls[i].equals(currentUrl)) return resourcePackage.urls[i + 1];
         }
         return null;
     }
 
     @Nullable
-    private Uri findReusableDownloadZipUri() {
+    private Uri findReusableDownloadZipUri(ResourcePackage resourcePackage) {
         ContentResolver resolver = getContentResolver();
         String[] projection = new String[] { MediaStore.Downloads._ID };
         String selection = MediaStore.Downloads.DISPLAY_NAME + "=? AND " + MediaStore.Downloads.RELATIVE_PATH + "=?";
-        String[] args = new String[] { RESOURCE_ZIP_FILE_NAME, Environment.DIRECTORY_DOWNLOADS + "/" };
+        String[] args = new String[] { resourcePackage.fileName, Environment.DIRECTORY_DOWNLOADS + "/" };
         try (Cursor cursor = resolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, projection, selection, args, null)) {
             if (cursor != null && cursor.moveToFirst()) {
                 Uri uri = ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(0));
-                if (isDownloadReadyFileCurrent()) return uri;
+                if (isDownloadReadyFileCurrent(resourcePackage)) return uri;
                 resolver.delete(uri, null, null);
             }
             return null;
         }
     }
 
-    private void downloadFile(String url, File outFile) throws Exception {
+    private void downloadFile(ResourcePackage resourcePackage, String url, File outFile) throws Exception {
         File parent = outFile.getParentFile();
         if (parent != null && !parent.exists()) parent.mkdirs();
         try (OutputStream output = new BufferedOutputStream(new FileOutputStream(outFile))) {
-            downloadFile(url, output);
+            downloadFile(url, output, resourcePackage.fileName);
         }
     }
 
-    private void downloadFileWithFallback(File outFile) throws Exception {
+    private void downloadFileWithFallback(ResourcePackage resourcePackage, File outFile) throws Exception {
         Exception lastError = null;
-        for (String url : RESOURCE_ZIP_URLS) {
+        for (String url : resourcePackage.urls) {
             try {
                 if (outFile.exists()) outFile.delete();
-                showLoading("Downloading resource.zip...", 1, false);
-                downloadFile(url, outFile);
-                storeDownloadUrl(url);
+                showLoading("Downloading " + resourcePackage.fileName + "...", 1, false);
+                downloadFile(resourcePackage, url, outFile);
+                storeDownloadUrl(resourcePackage, url);
                 return;
             } catch (Exception e) {
                 lastError = e;
@@ -561,26 +621,10 @@ public class MainActivity extends AppCompatActivity {
                 showLoading("Download source failed, trying fallback...", 1, true);
             }
         }
-        throw lastError == null ? new IllegalStateException("No resource.zip download source is available.") : lastError;
+        throw lastError == null ? new IllegalStateException("No " + resourcePackage.fileName + " download source is available.") : lastError;
     }
 
-    private void downloadFile(String url, Uri outUri) throws Exception {
-        try {
-            OutputStream rawOutput = getContentResolver().openOutputStream(outUri, "w");
-            if (rawOutput == null) throw new IllegalStateException("Cannot write Download/resource.zip.");
-            try (OutputStream output = new BufferedOutputStream(rawOutput)) {
-                downloadFile(url, output);
-            }
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Downloads.IS_PENDING, 0);
-            getContentResolver().update(outUri, values, null, null);
-        } catch (Exception e) {
-            getContentResolver().delete(outUri, null, null);
-            throw e;
-        }
-    }
-
-    private void downloadFile(String url, OutputStream output) throws Exception {
+    private void downloadFile(String url, OutputStream output, String fileName) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(30000);
@@ -591,7 +635,7 @@ public class MainActivity extends AppCompatActivity {
         }
         long total = conn.getContentLengthLong();
         long downloaded = 0;
-        showLoading(total > 0 ? "Downloading resource.zip..." : "Downloading resource.zip, downloaded 0 MB", 1, false);
+        showLoading(total > 0 ? "Downloading " + fileName + "..." : "Downloading " + fileName + ", downloaded 0 MB", 1, false);
         try (InputStream input = new BufferedInputStream(conn.getInputStream());
              OutputStream out = output) {
             byte[] buffer = new byte[1024 * 256];
@@ -605,9 +649,9 @@ public class MainActivity extends AppCompatActivity {
                     lastUpdate = now;
                     if (total > 0) {
                         int percent = Math.max(1, Math.min(82, (int) ((downloaded * 82) / total)));
-                        showLoading("Downloading resource.zip " + formatMb(downloaded) + " / " + formatMb(total), percent, false);
+                        showLoading("Downloading " + fileName + " " + formatMb(downloaded) + " / " + formatMb(total), percent, false);
                     } else {
-                        showLoading("Downloading resource.zip, downloaded " + formatMb(downloaded), 8, true);
+                        showLoading("Downloading " + fileName + ", downloaded " + formatMb(downloaded), 8, true);
                     }
                 }
             }
@@ -616,27 +660,27 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void unzipStaticResources(File zipFile, File resourceDir) throws Exception {
+    private void unzipStaticResources(File zipFile, File resourceDir, String fileName) throws Exception {
         try (InputStream input = new BufferedInputStream(new FileInputStream(zipFile))) {
-            unzipStaticResources(input, resourceDir);
+            unzipStaticResources(input, resourceDir, fileName);
         }
     }
 
-    private void unzipStaticResources(Uri zipUri, File resourceDir) throws Exception {
+    private void unzipStaticResources(Uri zipUri, File resourceDir, String fileName) throws Exception {
         InputStream rawInput;
         if ("file".equalsIgnoreCase(zipUri.getScheme())) {
             rawInput = new FileInputStream(new File(zipUri.getPath()));
         } else {
             rawInput = getContentResolver().openInputStream(zipUri);
         }
-        if (rawInput == null) throw new IllegalStateException("Cannot read Download/resource.zip.");
+        if (rawInput == null) throw new IllegalStateException("Cannot read Download/" + fileName + ".");
         try (InputStream input = new BufferedInputStream(rawInput)) {
-            unzipStaticResources(input, resourceDir);
+            unzipStaticResources(input, resourceDir, fileName);
         }
     }
 
-    private void unzipStaticResources(InputStream zipInput, File resourceDir) throws Exception {
-        showLoading("Extracting resources...", 88, true);
+    private void unzipStaticResources(InputStream zipInput, File resourceDir, String fileName) throws Exception {
+        showLoading("Extracting " + fileName + "...", 88, true);
         int extracted = 0;
         try (ZipInputStream zip = new ZipInputStream(zipInput, Charset.forName(RESOURCE_ENTRY_CHARSET))) {
             ZipEntry entry;
@@ -675,11 +719,11 @@ public class MainActivity extends AppCompatActivity {
                 zip.closeEntry();
                 extracted += 1;
                 if (extracted % 200 == 0) {
-                    showLoading("Extracting resources, extracted " + extracted + " files", 88, true);
+                    showLoading("Extracting " + fileName + ", extracted " + extracted + " files", 88, true);
                 }
             }
         }
-        if (extracted == 0) throw new IllegalStateException("No static resources were found in resource.zip.");
+        if (extracted == 0) throw new IllegalStateException("No static resources were found in " + fileName + ".");
     }
 
     @Nullable
@@ -826,47 +870,89 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void writeReadyFile(File readyFile) throws Exception {
-        String json = "{\"ok\":true,\"version\":" + RESOURCE_READY_VERSION + ",\"resourceZipUrl\":\"" + getStoredDownloadUrl() + "\",\"resourceEntryCharset\":\"" + RESOURCE_ENTRY_CHARSET + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
+        String json = "{\"ok\":true,\"version\":" + RESOURCE_READY_VERSION
+            + ",\"resourceZipUrl\":\"" + getStoredDownloadUrl(BASE_RESOURCE_PACKAGE)
+            + "\",\"resourceV7ZipUrl\":\"" + getStoredDownloadUrl(V7_RESOURCE_PACKAGE)
+            + "\",\"resourceEntryCharset\":\"" + RESOURCE_ENTRY_CHARSET
+            + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
         try (OutputStream output = new FileOutputStream(readyFile)) {
             output.write(json.getBytes(StandardCharsets.UTF_8));
         }
     }
 
-    private void writeDownloadReadyFile() throws Exception {
-        File readyFile = getDownloadReadyFile();
-        String json = "{\"ok\":true,\"resourceZipUrl\":\"" + getStoredDownloadUrl() + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
+    private void writeDownloadReadyFile(ResourcePackage resourcePackage) throws Exception {
+        File readyFile = getDownloadReadyFile(resourcePackage);
+        String json = "{\"ok\":true,\"fileName\":\"" + resourcePackage.fileName
+            + "\",\"resourceZipUrl\":\"" + getStoredDownloadUrl(resourcePackage)
+            + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
         try (OutputStream output = new FileOutputStream(readyFile)) {
             output.write(json.getBytes(StandardCharsets.UTF_8));
         }
     }
 
-    private boolean isDownloadReadyFileCurrent() {
-        File readyFile = getDownloadReadyFile();
+    private boolean isDownloadReadyFileCurrent(ResourcePackage resourcePackage) {
+        File readyFile = getDownloadReadyFile(resourcePackage);
         if (!readyFile.isFile()) return false;
         try {
             JSONObject json = new JSONObject(readTextFile(readyFile));
-            return json.optBoolean("ok", false) && isKnownResourceZipUrl(json.optString("resourceZipUrl", ""));
+            String resourceZipUrl = json.optString("resourceZipUrl", "");
+            boolean isCurrent = json.optBoolean("ok", false)
+                && resourcePackage.fileName.equals(json.optString("fileName", resourcePackage.fileName))
+                && isKnownResourceZipUrl(resourcePackage, resourceZipUrl);
+            if (isCurrent) storeDownloadUrl(resourcePackage, resourceZipUrl);
+            return isCurrent;
         } catch (Exception ignored) {
             return false;
         }
     }
 
-    private void deleteDownloadReadyFile() {
-        File readyFile = getDownloadReadyFile();
+    private void deleteDownloadReadyFile(ResourcePackage resourcePackage) {
+        File readyFile = getDownloadReadyFile(resourcePackage);
         if (readyFile.exists()) readyFile.delete();
     }
 
-    private File getDownloadReadyFile() {
-        return new File(getResourceBaseDir(), DOWNLOAD_READY_FILE);
+    private File getDownloadReadyFile(ResourcePackage resourcePackage) {
+        return new File(getResourceBaseDir(), resourcePackage.downloadReadyFileName);
     }
 
-    private boolean isReadyFileCurrent(File readyFile) {
+    private void writeExtractReadyFile(ResourcePackage resourcePackage, File resourceDir) throws Exception {
+        File readyFile = getExtractReadyFile(resourcePackage, resourceDir);
+        String json = "{\"ok\":true,\"fileName\":\"" + resourcePackage.fileName
+            + "\",\"resourceZipUrl\":\"" + getStoredDownloadUrl(resourcePackage)
+            + "\",\"resourceEntryCharset\":\"" + RESOURCE_ENTRY_CHARSET
+            + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
+        try (OutputStream output = new FileOutputStream(readyFile)) {
+            output.write(json.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private boolean isExtractReadyFileCurrent(ResourcePackage resourcePackage, File resourceDir) {
+        File readyFile = getExtractReadyFile(resourcePackage, resourceDir);
+        if (!readyFile.isFile()) return false;
+        try {
+            JSONObject json = new JSONObject(readTextFile(readyFile));
+            return json.optBoolean("ok", false)
+                && resourcePackage.fileName.equals(json.optString("fileName", ""))
+                && RESOURCE_ENTRY_CHARSET.equalsIgnoreCase(json.optString("resourceEntryCharset", ""))
+                && isKnownResourceZipUrl(resourcePackage, json.optString("resourceZipUrl", ""));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private File getExtractReadyFile(ResourcePackage resourcePackage, File resourceDir) {
+        return new File(resourceDir, resourcePackage.extractReadyFileName);
+    }
+
+    private boolean isReadyFileCurrent(File readyFile, File resourceDir) {
         if (readyFile == null || !readyFile.isFile()) return false;
         try {
             JSONObject json = new JSONObject(readTextFile(readyFile));
             return json.optBoolean("ok", false)
                 && json.optInt("version", 0) == RESOURCE_READY_VERSION
-                && RESOURCE_ENTRY_CHARSET.equalsIgnoreCase(json.optString("resourceEntryCharset", ""));
+                && RESOURCE_ENTRY_CHARSET.equalsIgnoreCase(json.optString("resourceEntryCharset", ""))
+                && isExtractReadyFileCurrent(BASE_RESOURCE_PACKAGE, resourceDir)
+                && isExtractReadyFileCurrent(V7_RESOURCE_PACKAGE, resourceDir);
         } catch (Exception ignored) {
             return false;
         }
