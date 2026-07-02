@@ -372,7 +372,8 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 showLoading("Using existing " + resourcePackage.fileName + "...", 84, true);
             }
-            unzipStaticResources(zipUri, resourceDir, resourcePackage);
+            String samplePath = unzipStaticResources(zipUri, resourceDir, resourcePackage);
+            writeExtractReadyFile(resourcePackage, resourceDir, samplePath);
         } else {
             File zipFile = getDownloadZipFile(resourcePackage);
             if (!zipFile.isFile() || !isDownloadReadyFileCurrent(resourcePackage)) {
@@ -383,9 +384,9 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 showLoading("Using existing " + resourcePackage.fileName + "...", 84, true);
             }
-            unzipStaticResources(zipFile, resourceDir, resourcePackage);
+            String samplePath = unzipStaticResources(zipFile, resourceDir, resourcePackage);
+            writeExtractReadyFile(resourcePackage, resourceDir, samplePath);
         }
-        writeExtractReadyFile(resourcePackage, resourceDir);
     }
 
     private File getDownloadZipFile(ResourcePackage resourcePackage) throws Exception {
@@ -666,13 +667,13 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void unzipStaticResources(File zipFile, File resourceDir, ResourcePackage resourcePackage) throws Exception {
+    private String unzipStaticResources(File zipFile, File resourceDir, ResourcePackage resourcePackage) throws Exception {
         try (InputStream input = new BufferedInputStream(new FileInputStream(zipFile))) {
-            unzipStaticResources(input, resourceDir, resourcePackage);
+            return unzipStaticResources(input, resourceDir, resourcePackage);
         }
     }
 
-    private void unzipStaticResources(Uri zipUri, File resourceDir, ResourcePackage resourcePackage) throws Exception {
+    private String unzipStaticResources(Uri zipUri, File resourceDir, ResourcePackage resourcePackage) throws Exception {
         InputStream rawInput;
         if ("file".equalsIgnoreCase(zipUri.getScheme())) {
             rawInput = new FileInputStream(new File(zipUri.getPath()));
@@ -681,13 +682,14 @@ public class MainActivity extends AppCompatActivity {
         }
         if (rawInput == null) throw new IllegalStateException("Cannot read Download/" + resourcePackage.fileName + ".");
         try (InputStream input = new BufferedInputStream(rawInput)) {
-            unzipStaticResources(input, resourceDir, resourcePackage);
+            return unzipStaticResources(input, resourceDir, resourcePackage);
         }
     }
 
-    private void unzipStaticResources(InputStream zipInput, File resourceDir, ResourcePackage resourcePackage) throws Exception {
+    private String unzipStaticResources(InputStream zipInput, File resourceDir, ResourcePackage resourcePackage) throws Exception {
         showLoading("Extracting " + resourcePackage.fileName + "...", 88, true);
         int extracted = 0;
+        String samplePath = "";
         try (ZipInputStream zip = new ZipInputStream(zipInput, Charset.forName(RESOURCE_ENTRY_CHARSET))) {
             ZipEntry entry;
             String rootPath = resourceDir.getCanonicalPath() + File.separator;
@@ -723,6 +725,7 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
                 zip.closeEntry();
+                if (samplePath.length() == 0) samplePath = rel;
                 extracted += 1;
                 if (extracted % 200 == 0) {
                     showLoading("Extracting " + resourcePackage.fileName + ", extracted " + extracted + " files", 88, true);
@@ -730,6 +733,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         if (extracted == 0) throw new IllegalStateException("No static resources were found in " + resourcePackage.fileName + ".");
+        return samplePath;
     }
 
     @Nullable
@@ -964,27 +968,63 @@ public class MainActivity extends AppCompatActivity {
         return new File(getResourceBaseDir(), resourcePackage.downloadReadyFileName);
     }
 
-    private void writeExtractReadyFile(ResourcePackage resourcePackage, File resourceDir) throws Exception {
+    private void writeExtractReadyFile(ResourcePackage resourcePackage, File resourceDir, String samplePath) throws Exception {
         File readyFile = getExtractReadyFile(resourcePackage, resourceDir);
-        String json = "{\"ok\":true,\"fileName\":\"" + resourcePackage.fileName
-            + "\",\"version\":" + RESOURCE_READY_VERSION
-            + "\",\"resourceZipUrl\":\"" + getStoredDownloadUrl(resourcePackage)
-            + "\",\"resourceEntryCharset\":\"" + RESOURCE_ENTRY_CHARSET
-            + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
+        JSONObject json = new JSONObject();
+        json.put("ok", true);
+        json.put("fileName", resourcePackage.fileName);
+        json.put("version", RESOURCE_READY_VERSION);
+        json.put("resourceZipUrl", getStoredDownloadUrl(resourcePackage));
+        json.put("resourceEntryCharset", RESOURCE_ENTRY_CHARSET);
+        json.put("samplePath", samplePath == null ? "" : samplePath);
+        json.put("finishedAt", System.currentTimeMillis());
         try (OutputStream output = new FileOutputStream(readyFile)) {
-            output.write(json.getBytes(StandardCharsets.UTF_8));
+            output.write(json.toString().getBytes(StandardCharsets.UTF_8));
         }
+        storeExtractReady(resourcePackage, samplePath);
     }
 
     private boolean isExtractReadyFileCurrent(ResourcePackage resourcePackage, File resourceDir) {
         File readyFile = getExtractReadyFile(resourcePackage, resourceDir);
-        if (!readyFile.isFile()) return false;
+        if (readyFile.isFile()) {
+            try {
+                JSONObject json = new JSONObject(readTextFile(readyFile));
+                boolean isCurrent = json.optBoolean("ok", false)
+                    && json.optInt("version", 0) == RESOURCE_READY_VERSION
+                    && resourcePackage.fileName.equals(json.optString("fileName", ""))
+                    && RESOURCE_ENTRY_CHARSET.equalsIgnoreCase(json.optString("resourceEntryCharset", ""))
+                    && isExtractSamplePresent(resourceDir, json.optString("samplePath", ""));
+                if (isCurrent) {
+                    storeExtractReady(resourcePackage, json.optString("samplePath", ""));
+                    return true;
+                }
+            } catch (Exception ignored) {
+                // Fall through to the SharedPreferences marker.
+            }
+        }
+        return isStoredExtractReadyCurrent(resourcePackage, resourceDir);
+    }
+
+    private void storeExtractReady(ResourcePackage resourcePackage, String samplePath) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putInt(resourcePackage.prefDownloadUrl + "_extract_version", RESOURCE_READY_VERSION)
+            .putString(resourcePackage.prefDownloadUrl + "_extract_sample_path", samplePath == null ? "" : samplePath)
+            .apply();
+    }
+
+    private boolean isStoredExtractReadyCurrent(ResourcePackage resourcePackage, File resourceDir) {
+        String samplePath = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(resourcePackage.prefDownloadUrl + "_extract_sample_path", "");
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(resourcePackage.prefDownloadUrl + "_extract_version", 0) == RESOURCE_READY_VERSION
+            && isExtractSamplePresent(resourceDir, samplePath);
+    }
+
+    private boolean isExtractSamplePresent(File resourceDir, String samplePath) {
         try {
-            JSONObject json = new JSONObject(readTextFile(readyFile));
-            return json.optBoolean("ok", false)
-                && json.optInt("version", 0) == RESOURCE_READY_VERSION
-                && resourcePackage.fileName.equals(json.optString("fileName", ""))
-                && RESOURCE_ENTRY_CHARSET.equalsIgnoreCase(json.optString("resourceEntryCharset", ""));
+            if (samplePath == null || samplePath.length() == 0) return false;
+            File file = new File(resourceDir, samplePath);
+            String rootPath = resourceDir.getCanonicalPath() + File.separator;
+            String filePath = file.getCanonicalPath();
+            return filePath.startsWith(rootPath) && file.isFile();
         } catch (Exception ignored) {
             return false;
         }
