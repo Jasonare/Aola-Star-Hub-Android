@@ -67,11 +67,18 @@ import java.util.zip.ZipInputStream;
 public class MainActivity extends AppCompatActivity {
 
     private static final String REMOTE_APP_URL = "http://110.40.157.248/aola-star.html";
-    private static final String RESOURCE_ZIP_URL = "https://oss-bucket-aola-hub.oss-cn-beijing.aliyuncs.com/aola/assets/resource.zip";
+    private static final String RESOURCE_ZIP_FILE_NAME = "resource.zip";
+    private static final String COS_RESOURCE_ZIP_URL = "https://aola-star-hub-1350639287.cos.ap-shanghai.myqcloud.com/resource.zip";
+    private static final String SERVER_RESOURCE_ZIP_URL = "http://110.40.157.248/resource.zip";
+    private static final String[] RESOURCE_ZIP_URLS = new String[] {
+        COS_RESOURCE_ZIP_URL,
+        SERVER_RESOURCE_ZIP_URL
+    };
     private static final String READY_FILE = ".resource-ready.json";
     private static final String DOWNLOAD_READY_FILE = ".resource-download-ready.json";
     private static final String PREFS_NAME = "aola_resource_prefs";
     private static final String PREF_DOWNLOAD_ID = "resource_download_id";
+    private static final String PREF_DOWNLOAD_URL = "resource_download_url";
     private static final String RESOURCE_ENTRY_CHARSET = "GBK";
     private static final int RESOURCE_READY_VERSION = 2;
     private static final String TAG = "AolaStarHub";
@@ -288,7 +295,7 @@ public class MainActivity extends AppCompatActivity {
                     if (!zipFile.isFile() || !isDownloadReadyFileCurrent()) {
                         if (zipFile.exists()) zipFile.delete();
                         deleteDownloadReadyFile();
-                        downloadFile(RESOURCE_ZIP_URL, zipFile);
+                        downloadFileWithFallback(zipFile);
                         writeDownloadReadyFile();
                     } else {
                         showLoading("Using existing resource.zip...", 84, true);
@@ -327,14 +334,14 @@ public class MainActivity extends AppCompatActivity {
         if (!downloadDir.exists() && !downloadDir.mkdirs()) {
             throw new IllegalStateException("Cannot create Download directory.");
         }
-        return new File(downloadDir, "resource.zip");
+        return new File(downloadDir, RESOURCE_ZIP_FILE_NAME);
     }
 
     private Uri createDownloadZipUri() throws Exception {
         ContentResolver resolver = getContentResolver();
 
         ContentValues values = new ContentValues();
-        values.put(MediaStore.Downloads.DISPLAY_NAME, "resource.zip");
+        values.put(MediaStore.Downloads.DISPLAY_NAME, RESOURCE_ZIP_FILE_NAME);
         values.put(MediaStore.Downloads.MIME_TYPE, "application/zip");
         values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
         values.put(MediaStore.Downloads.IS_PENDING, 1);
@@ -348,6 +355,15 @@ public class MainActivity extends AppCompatActivity {
         if (manager == null) throw new IllegalStateException("Download service is unavailable.");
 
         long downloadId = getStoredDownloadId();
+        String downloadUrl = getStoredDownloadUrl();
+        if (downloadId > 0 && !isKnownResourceZipUrl(downloadUrl)) {
+            manager.remove(downloadId);
+            clearStoredDownloadId();
+            clearStoredDownloadUrl();
+            downloadId = -1L;
+            downloadUrl = "";
+        }
+
         Uri zipUri = getCompletedDownloadUri(manager, downloadId);
         if (zipUri != null) {
             writeDownloadReadyFile();
@@ -358,8 +374,10 @@ public class MainActivity extends AppCompatActivity {
         if (progress == null || progress.status == DownloadManager.STATUS_FAILED) {
             deleteDownloadReadyFile();
             if (downloadId > 0) manager.remove(downloadId);
-            downloadId = enqueueResourceDownload(manager);
+            downloadUrl = RESOURCE_ZIP_URLS[0];
+            downloadId = enqueueResourceDownload(manager, downloadUrl);
             storeDownloadId(downloadId);
+            storeDownloadUrl(downloadUrl);
         }
 
         showDownloadManagerProgress(manager, downloadId);
@@ -373,7 +391,20 @@ public class MainActivity extends AppCompatActivity {
             if (progress == null || progress.status == DownloadManager.STATUS_FAILED) {
                 deleteDownloadReadyFile();
                 clearStoredDownloadId();
-                throw new IllegalStateException("Background download failed. Please reopen the app to retry.");
+                String fallbackUrl = getFallbackResourceZipUrl(downloadUrl);
+                if (fallbackUrl == null) {
+                    clearStoredDownloadUrl();
+                    throw new IllegalStateException("Background download failed. Please reopen the app to retry.");
+                }
+                manager.remove(downloadId);
+                showLoading("Primary download failed, switching download source...", 1, true);
+                downloadUrl = fallbackUrl;
+                downloadId = enqueueResourceDownload(manager, downloadUrl);
+                storeDownloadId(downloadId);
+                storeDownloadUrl(downloadUrl);
+                showDownloadManagerProgress(manager, downloadId);
+                Thread.sleep(3000);
+                continue;
             }
             showDownloadProgress(progress);
             Thread.sleep(3000);
@@ -400,15 +431,15 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private long enqueueResourceDownload(DownloadManager manager) {
-        DownloadManager.Request request = new DownloadManager.Request(Uri.parse(RESOURCE_ZIP_URL));
+    private long enqueueResourceDownload(DownloadManager manager, String url) {
+        DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
         request.setTitle("Aola Star Hub resource.zip");
         request.setDescription("Downloading game resources");
         request.setMimeType("application/zip");
         request.setAllowedOverMetered(true);
         request.setAllowedOverRoaming(true);
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "resource.zip");
+        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, RESOURCE_ZIP_FILE_NAME);
         return manager.enqueue(request);
     }
 
@@ -462,12 +493,41 @@ public class MainActivity extends AppCompatActivity {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().remove(PREF_DOWNLOAD_ID).apply();
     }
 
+    private String getStoredDownloadUrl() {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(PREF_DOWNLOAD_URL, "");
+    }
+
+    private void storeDownloadUrl(String url) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(PREF_DOWNLOAD_URL, url).apply();
+    }
+
+    private void clearStoredDownloadUrl() {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().remove(PREF_DOWNLOAD_URL).apply();
+    }
+
+    private boolean isKnownResourceZipUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        for (String resourceZipUrl : RESOURCE_ZIP_URLS) {
+            if (resourceZipUrl.equals(url)) return true;
+        }
+        return false;
+    }
+
+    @Nullable
+    private String getFallbackResourceZipUrl(String currentUrl) {
+        if (currentUrl == null || currentUrl.isEmpty()) return null;
+        for (int i = 0; i < RESOURCE_ZIP_URLS.length - 1; i++) {
+            if (RESOURCE_ZIP_URLS[i].equals(currentUrl)) return RESOURCE_ZIP_URLS[i + 1];
+        }
+        return null;
+    }
+
     @Nullable
     private Uri findReusableDownloadZipUri() {
         ContentResolver resolver = getContentResolver();
         String[] projection = new String[] { MediaStore.Downloads._ID };
         String selection = MediaStore.Downloads.DISPLAY_NAME + "=? AND " + MediaStore.Downloads.RELATIVE_PATH + "=?";
-        String[] args = new String[] { "resource.zip", Environment.DIRECTORY_DOWNLOADS + "/" };
+        String[] args = new String[] { RESOURCE_ZIP_FILE_NAME, Environment.DIRECTORY_DOWNLOADS + "/" };
         try (Cursor cursor = resolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, projection, selection, args, null)) {
             if (cursor != null && cursor.moveToFirst()) {
                 Uri uri = ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(0));
@@ -484,6 +544,24 @@ public class MainActivity extends AppCompatActivity {
         try (OutputStream output = new BufferedOutputStream(new FileOutputStream(outFile))) {
             downloadFile(url, output);
         }
+    }
+
+    private void downloadFileWithFallback(File outFile) throws Exception {
+        Exception lastError = null;
+        for (String url : RESOURCE_ZIP_URLS) {
+            try {
+                if (outFile.exists()) outFile.delete();
+                showLoading("Downloading resource.zip...", 1, false);
+                downloadFile(url, outFile);
+                storeDownloadUrl(url);
+                return;
+            } catch (Exception e) {
+                lastError = e;
+                if (outFile.exists()) outFile.delete();
+                showLoading("Download source failed, trying fallback...", 1, true);
+            }
+        }
+        throw lastError == null ? new IllegalStateException("No resource.zip download source is available.") : lastError;
     }
 
     private void downloadFile(String url, Uri outUri) throws Exception {
@@ -748,7 +826,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void writeReadyFile(File readyFile) throws Exception {
-        String json = "{\"ok\":true,\"version\":" + RESOURCE_READY_VERSION + ",\"resourceZipUrl\":\"" + RESOURCE_ZIP_URL + "\",\"resourceEntryCharset\":\"" + RESOURCE_ENTRY_CHARSET + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
+        String json = "{\"ok\":true,\"version\":" + RESOURCE_READY_VERSION + ",\"resourceZipUrl\":\"" + getStoredDownloadUrl() + "\",\"resourceEntryCharset\":\"" + RESOURCE_ENTRY_CHARSET + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
         try (OutputStream output = new FileOutputStream(readyFile)) {
             output.write(json.getBytes(StandardCharsets.UTF_8));
         }
@@ -756,7 +834,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void writeDownloadReadyFile() throws Exception {
         File readyFile = getDownloadReadyFile();
-        String json = "{\"ok\":true,\"resourceZipUrl\":\"" + RESOURCE_ZIP_URL + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
+        String json = "{\"ok\":true,\"resourceZipUrl\":\"" + getStoredDownloadUrl() + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
         try (OutputStream output = new FileOutputStream(readyFile)) {
             output.write(json.getBytes(StandardCharsets.UTF_8));
         }
@@ -767,7 +845,7 @@ public class MainActivity extends AppCompatActivity {
         if (!readyFile.isFile()) return false;
         try {
             JSONObject json = new JSONObject(readTextFile(readyFile));
-            return json.optBoolean("ok", false) && RESOURCE_ZIP_URL.equals(json.optString("resourceZipUrl", ""));
+            return json.optBoolean("ok", false) && isKnownResourceZipUrl(json.optString("resourceZipUrl", ""));
         } catch (Exception ignored) {
             return false;
         }
