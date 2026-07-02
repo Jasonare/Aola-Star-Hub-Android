@@ -984,8 +984,7 @@ public class MainActivity extends AppCompatActivity {
             return json.optBoolean("ok", false)
                 && json.optInt("version", 0) == RESOURCE_READY_VERSION
                 && resourcePackage.fileName.equals(json.optString("fileName", ""))
-                && RESOURCE_ENTRY_CHARSET.equalsIgnoreCase(json.optString("resourceEntryCharset", ""))
-                && isKnownResourceZipUrl(resourcePackage, json.optString("resourceZipUrl", ""));
+                && RESOURCE_ENTRY_CHARSET.equalsIgnoreCase(json.optString("resourceEntryCharset", ""));
         } catch (Exception ignored) {
             return false;
         }
