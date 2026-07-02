@@ -92,7 +92,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String PREF_V7_DOWNLOAD_ID = "resource_v7_download_id";
     private static final String PREF_V7_DOWNLOAD_URL = "resource_v7_download_url";
     private static final String RESOURCE_ENTRY_CHARSET = "GBK";
-    private static final int RESOURCE_READY_VERSION = 3;
+    private static final int RESOURCE_READY_VERSION = 4;
     private static final String TAG = "AolaStarHub";
     private static final ResourcePackage BASE_RESOURCE_PACKAGE = new ResourcePackage(
         RESOURCE_ZIP_FILE_NAME,
@@ -100,7 +100,8 @@ public class MainActivity extends AppCompatActivity {
         DOWNLOAD_READY_FILE,
         EXTRACT_READY_FILE,
         PREF_DOWNLOAD_ID,
-        PREF_DOWNLOAD_URL
+        PREF_DOWNLOAD_URL,
+        false
     );
     private static final ResourcePackage V7_RESOURCE_PACKAGE = new ResourcePackage(
         RESOURCE_V7_ZIP_FILE_NAME,
@@ -108,7 +109,8 @@ public class MainActivity extends AppCompatActivity {
         DOWNLOAD_V7_READY_FILE,
         EXTRACT_V7_READY_FILE,
         PREF_V7_DOWNLOAD_ID,
-        PREF_V7_DOWNLOAD_URL
+        PREF_V7_DOWNLOAD_URL,
+        true
     );
     private static final String ANDROID_WEB_PATCH_CSS =
         "html.android-webview,html.android-webview body{width:auto!important;min-width:100vw!important;height:auto!important;min-height:100vh!important;overflow:auto!important;-webkit-overflow-scrolling:touch!important;}" +
@@ -184,6 +186,8 @@ public class MainActivity extends AppCompatActivity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        webView.clearCache(true);
 
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, false);
@@ -368,7 +372,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 showLoading("Using existing " + resourcePackage.fileName + "...", 84, true);
             }
-            unzipStaticResources(zipUri, resourceDir, resourcePackage.fileName);
+            unzipStaticResources(zipUri, resourceDir, resourcePackage);
         } else {
             File zipFile = getDownloadZipFile(resourcePackage);
             if (!zipFile.isFile() || !isDownloadReadyFileCurrent(resourcePackage)) {
@@ -379,7 +383,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 showLoading("Using existing " + resourcePackage.fileName + "...", 84, true);
             }
-            unzipStaticResources(zipFile, resourceDir, resourcePackage.fileName);
+            unzipStaticResources(zipFile, resourceDir, resourcePackage);
         }
         writeExtractReadyFile(resourcePackage, resourceDir);
     }
@@ -530,14 +534,16 @@ public class MainActivity extends AppCompatActivity {
         final String extractReadyFileName;
         final String prefDownloadId;
         final String prefDownloadUrl;
+        final boolean extractAllEntries;
 
-        ResourcePackage(String fileName, String[] urls, String downloadReadyFileName, String extractReadyFileName, String prefDownloadId, String prefDownloadUrl) {
+        ResourcePackage(String fileName, String[] urls, String downloadReadyFileName, String extractReadyFileName, String prefDownloadId, String prefDownloadUrl, boolean extractAllEntries) {
             this.fileName = fileName;
             this.urls = urls;
             this.downloadReadyFileName = downloadReadyFileName;
             this.extractReadyFileName = extractReadyFileName;
             this.prefDownloadId = prefDownloadId;
             this.prefDownloadUrl = prefDownloadUrl;
+            this.extractAllEntries = extractAllEntries;
         }
     }
 
@@ -660,34 +666,34 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void unzipStaticResources(File zipFile, File resourceDir, String fileName) throws Exception {
+    private void unzipStaticResources(File zipFile, File resourceDir, ResourcePackage resourcePackage) throws Exception {
         try (InputStream input = new BufferedInputStream(new FileInputStream(zipFile))) {
-            unzipStaticResources(input, resourceDir, fileName);
+            unzipStaticResources(input, resourceDir, resourcePackage);
         }
     }
 
-    private void unzipStaticResources(Uri zipUri, File resourceDir, String fileName) throws Exception {
+    private void unzipStaticResources(Uri zipUri, File resourceDir, ResourcePackage resourcePackage) throws Exception {
         InputStream rawInput;
         if ("file".equalsIgnoreCase(zipUri.getScheme())) {
             rawInput = new FileInputStream(new File(zipUri.getPath()));
         } else {
             rawInput = getContentResolver().openInputStream(zipUri);
         }
-        if (rawInput == null) throw new IllegalStateException("Cannot read Download/" + fileName + ".");
+        if (rawInput == null) throw new IllegalStateException("Cannot read Download/" + resourcePackage.fileName + ".");
         try (InputStream input = new BufferedInputStream(rawInput)) {
-            unzipStaticResources(input, resourceDir, fileName);
+            unzipStaticResources(input, resourceDir, resourcePackage);
         }
     }
 
-    private void unzipStaticResources(InputStream zipInput, File resourceDir, String fileName) throws Exception {
-        showLoading("Extracting " + fileName + "...", 88, true);
+    private void unzipStaticResources(InputStream zipInput, File resourceDir, ResourcePackage resourcePackage) throws Exception {
+        showLoading("Extracting " + resourcePackage.fileName + "...", 88, true);
         int extracted = 0;
         try (ZipInputStream zip = new ZipInputStream(zipInput, Charset.forName(RESOURCE_ENTRY_CHARSET))) {
             ZipEntry entry;
             String rootPath = resourceDir.getCanonicalPath() + File.separator;
             Set<String> extractedPaths = new HashSet<>();
             while ((entry = zip.getNextEntry()) != null) {
-                String rel = getStaticResourceEntryPath(entry.getName());
+                String rel = getStaticResourceEntryPath(entry.getName(), resourcePackage);
                 if (rel == null) {
                     zip.closeEntry();
                     continue;
@@ -719,19 +725,23 @@ public class MainActivity extends AppCompatActivity {
                 zip.closeEntry();
                 extracted += 1;
                 if (extracted % 200 == 0) {
-                    showLoading("Extracting " + fileName + ", extracted " + extracted + " files", 88, true);
+                    showLoading("Extracting " + resourcePackage.fileName + ", extracted " + extracted + " files", 88, true);
                 }
             }
         }
-        if (extracted == 0) throw new IllegalStateException("No static resources were found in " + fileName + ".");
+        if (extracted == 0) throw new IllegalStateException("No static resources were found in " + resourcePackage.fileName + ".");
     }
 
     @Nullable
-    private String getStaticResourceEntryPath(String entryName) {
+    private String getStaticResourceEntryPath(String entryName, ResourcePackage resourcePackage) {
         String normalized = entryName == null ? "" : entryName.replace('\\', '/');
         while (normalized.startsWith("/")) normalized = normalized.substring(1);
         if (normalized.length() == 0 || normalized.contains("../")) return null;
         String[] parts = normalized.split("/");
+        if (resourcePackage.extractAllEntries) {
+            String directPath = getDirectResourceEntryPath(parts, getZipRootName(resourcePackage.fileName));
+            return directPath == null || directPath.length() == 0 ? null : directPath;
+        }
         for (int i = 0; i < parts.length; i++) {
             if (STATIC_RESOURCE_SEGMENTS.contains(parts[i])) {
                 StringBuilder out = new StringBuilder();
@@ -746,13 +756,41 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Nullable
+    private String getDirectResourceEntryPath(String[] parts, String packageRootName) {
+        if (parts == null || parts.length == 0) return null;
+        for (int i = 0; i < parts.length - 1; i++) {
+            String part = parts[i];
+            if ("resource".equalsIgnoreCase(part) || "resources".equalsIgnoreCase(part) || packageRootName.equalsIgnoreCase(part)) {
+                return joinPathParts(parts, i + 1);
+            }
+        }
+        return joinPathParts(parts, 0);
+    }
+
+    private String joinPathParts(String[] parts, int start) {
+        StringBuilder out = new StringBuilder();
+        for (int i = start; i < parts.length; i++) {
+            if (parts[i].length() == 0) return "";
+            if (i > start) out.append('/');
+            out.append(parts[i]);
+        }
+        return out.toString();
+    }
+
+    private String getZipRootName(String fileName) {
+        if (fileName == null) return "";
+        int dot = fileName.lastIndexOf('.');
+        return dot > 0 ? fileName.substring(0, dot) : fileName;
+    }
+
+    @Nullable
     private WebResourceResponse tryOpenLocalResource(Uri uri) {
         try {
             if (uri == null) return null;
             String path = URLDecoder.decode(uri.getPath() == null ? "" : uri.getPath(), StandardCharsets.UTF_8.name());
             while (path.startsWith("/")) path = path.substring(1);
             if (path.toLowerCase(Locale.ROOT).startsWith("resource/")) path = path.substring("resource/".length());
-            String rel = getStaticResourceEntryPath(path);
+            String rel = getRequestedResourcePath(path);
             if (rel == null) return null;
             File resourceDir = getResourceDir();
             File file = resolveLocalResourceFile(resourceDir, rel);
@@ -764,12 +802,23 @@ public class MainActivity extends AppCompatActivity {
             }
             Map<String, String> headers = new HashMap<>();
             headers.put("Access-Control-Allow-Origin", "*");
-            headers.put("Cache-Control", "public, max-age=31536000, immutable");
+            headers.put("Cache-Control", "no-cache, no-store, must-revalidate");
+            headers.put("Pragma", "no-cache");
+            headers.put("Expires", "0");
             Log.d(TAG, "resource hit: " + uri + " -> " + filePath);
             return new WebResourceResponse(getMimeType(file), null, 200, "OK", headers, new FileInputStream(file));
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    @Nullable
+    private String getRequestedResourcePath(String path) {
+        String normalized = path == null ? "" : path.replace('\\', '/');
+        while (normalized.startsWith("/")) normalized = normalized.substring(1);
+        if (normalized.length() == 0 || normalized.contains("../")) return null;
+        String[] parts = normalized.split("/");
+        return joinPathParts(parts, 0);
     }
 
     private File resolveLocalResourceFile(File resourceDir, String rel) {
@@ -918,6 +967,7 @@ public class MainActivity extends AppCompatActivity {
     private void writeExtractReadyFile(ResourcePackage resourcePackage, File resourceDir) throws Exception {
         File readyFile = getExtractReadyFile(resourcePackage, resourceDir);
         String json = "{\"ok\":true,\"fileName\":\"" + resourcePackage.fileName
+            + "\",\"version\":" + RESOURCE_READY_VERSION
             + "\",\"resourceZipUrl\":\"" + getStoredDownloadUrl(resourcePackage)
             + "\",\"resourceEntryCharset\":\"" + RESOURCE_ENTRY_CHARSET
             + "\",\"finishedAt\":" + System.currentTimeMillis() + "}";
@@ -932,6 +982,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             JSONObject json = new JSONObject(readTextFile(readyFile));
             return json.optBoolean("ok", false)
+                && json.optInt("version", 0) == RESOURCE_READY_VERSION
                 && resourcePackage.fileName.equals(json.optString("fileName", ""))
                 && RESOURCE_ENTRY_CHARSET.equalsIgnoreCase(json.optString("resourceEntryCharset", ""))
                 && isKnownResourceZipUrl(resourcePackage, json.optString("resourceZipUrl", ""));
