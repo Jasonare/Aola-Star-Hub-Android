@@ -376,13 +376,14 @@ public class MainActivity extends AppCompatActivity {
             writeExtractReadyFile(resourcePackage, resourceDir, samplePath);
         } else {
             File zipFile = getDownloadZipFile(resourcePackage);
-            if (!zipFile.isFile() || !isDownloadReadyFileCurrent(resourcePackage)) {
-                if (zipFile.exists()) zipFile.delete();
+            if (!zipFile.isFile()) {
                 deleteDownloadReadyFile(resourcePackage);
                 downloadFileWithFallback(resourcePackage, zipFile);
                 writeDownloadReadyFile(resourcePackage);
             } else {
                 showLoading("Using existing " + resourcePackage.fileName + "...", 84, true);
+                ensureStoredDownloadUrl(resourcePackage);
+                if (!isDownloadReadyFileCurrent(resourcePackage)) writeDownloadReadyFile(resourcePackage);
             }
             String samplePath = unzipStaticResources(zipFile, resourceDir, resourcePackage);
             writeExtractReadyFile(resourcePackage, resourceDir, samplePath);
@@ -413,6 +414,7 @@ public class MainActivity extends AppCompatActivity {
 
         Uri zipUri = getCompletedDownloadUri(manager, downloadId);
         if (zipUri != null) {
+            ensureStoredDownloadUrl(resourcePackage);
             writeDownloadReadyFile(resourcePackage);
             return zipUri;
         }
@@ -431,6 +433,7 @@ public class MainActivity extends AppCompatActivity {
         while (true) {
             zipUri = getCompletedDownloadUri(manager, downloadId);
             if (zipUri != null) {
+                ensureStoredDownloadUrl(resourcePackage);
                 writeDownloadReadyFile(resourcePackage);
                 return zipUri;
             }
@@ -572,6 +575,12 @@ public class MainActivity extends AppCompatActivity {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().remove(resourcePackage.prefDownloadUrl).apply();
     }
 
+    private void ensureStoredDownloadUrl(ResourcePackage resourcePackage) {
+        if (!isKnownResourceZipUrl(resourcePackage, getStoredDownloadUrl(resourcePackage))) {
+            storeDownloadUrl(resourcePackage, resourcePackage.urls[0]);
+        }
+    }
+
     private boolean isKnownResourceZipUrl(ResourcePackage resourcePackage, String url) {
         if (url == null || url.isEmpty()) return false;
         for (String resourceZipUrl : resourcePackage.urls) {
@@ -590,7 +599,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Nullable
-    private Uri findReusableDownloadZipUri(ResourcePackage resourcePackage) {
+    private Uri findReusableDownloadZipUri(ResourcePackage resourcePackage) throws Exception {
         ContentResolver resolver = getContentResolver();
         String[] projection = new String[] { MediaStore.Downloads._ID };
         String selection = MediaStore.Downloads.DISPLAY_NAME + "=? AND " + MediaStore.Downloads.RELATIVE_PATH + "=?";
@@ -598,8 +607,9 @@ public class MainActivity extends AppCompatActivity {
         try (Cursor cursor = resolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, projection, selection, args, null)) {
             if (cursor != null && cursor.moveToFirst()) {
                 Uri uri = ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(0));
-                if (isDownloadReadyFileCurrent(resourcePackage)) return uri;
-                resolver.delete(uri, null, null);
+                ensureStoredDownloadUrl(resourcePackage);
+                if (!isDownloadReadyFileCurrent(resourcePackage)) writeDownloadReadyFile(resourcePackage);
+                return uri;
             }
             return null;
         }
