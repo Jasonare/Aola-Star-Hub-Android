@@ -447,7 +447,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         DownloadProgress progress = getDownloadProgress(manager, downloadId);
-        if (progress == null || progress.status == DownloadManager.STATUS_FAILED) {
+        if (progress == null || progress.status == DownloadManager.STATUS_FAILED || progress.status == DownloadManager.STATUS_SUCCESSFUL) {
             deleteDownloadReadyFile(resourcePackage);
             if (downloadId > 0) manager.remove(downloadId);
             downloadUrl = resourcePackage.urls[0];
@@ -465,7 +465,7 @@ public class MainActivity extends AppCompatActivity {
                 return zipUri;
             }
             progress = getDownloadProgress(manager, downloadId);
-            if (progress == null || progress.status == DownloadManager.STATUS_FAILED) {
+            if (progress == null || progress.status == DownloadManager.STATUS_FAILED || progress.status == DownloadManager.STATUS_SUCCESSFUL) {
                 deleteDownloadReadyFile(resourcePackage);
                 clearStoredDownloadId(resourcePackage);
                 String fallbackUrl = getFallbackResourceZipUrl(resourcePackage, downloadUrl);
@@ -529,7 +529,22 @@ public class MainActivity extends AppCompatActivity {
             int status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
             if (status != DownloadManager.STATUS_SUCCESSFUL) return null;
             String uri = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI));
-            return uri == null ? manager.getUriForDownloadedFile(downloadId) : Uri.parse(uri);
+            Uri completedUri = uri == null ? manager.getUriForDownloadedFile(downloadId) : Uri.parse(uri);
+            return isReadableUri(completedUri) ? completedUri : null;
+        }
+    }
+
+    private boolean isReadableUri(Uri uri) {
+        if (uri == null) return false;
+        try {
+            if ("file".equalsIgnoreCase(uri.getScheme())) {
+                return uri.getPath() != null && new File(uri.getPath()).isFile();
+            }
+            try (InputStream input = getContentResolver().openInputStream(uri)) {
+                return input != null;
+            }
+        } catch (Exception ignored) {
+            return false;
         }
     }
 
