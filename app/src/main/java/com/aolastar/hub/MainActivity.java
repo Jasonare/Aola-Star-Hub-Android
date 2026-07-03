@@ -365,6 +365,16 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        File reusableZipFile = findReusableDownloadZipFile(resourcePackage);
+        if (reusableZipFile != null) {
+            showLoading("Using existing " + resourcePackage.fileName + "...", 84, true);
+            ensureStoredDownloadUrl(resourcePackage);
+            if (!isDownloadReadyFileCurrent(resourcePackage)) writeDownloadReadyFile(resourcePackage);
+            String samplePath = unzipStaticResources(reusableZipFile, resourceDir, resourcePackage);
+            writeExtractReadyFile(resourcePackage, resourceDir, samplePath);
+            return;
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             Uri zipUri = findReusableDownloadZipUri(resourcePackage);
             if (zipUri == null) {
@@ -376,21 +386,23 @@ public class MainActivity extends AppCompatActivity {
             writeExtractReadyFile(resourcePackage, resourceDir, samplePath);
         } else {
             File zipFile = getDownloadZipFile(resourcePackage);
-            if (!zipFile.isFile()) {
-                deleteDownloadReadyFile(resourcePackage);
-                downloadFileWithFallback(resourcePackage, zipFile);
-                writeDownloadReadyFile(resourcePackage);
-            } else {
-                showLoading("Using existing " + resourcePackage.fileName + "...", 84, true);
-                ensureStoredDownloadUrl(resourcePackage);
-                if (!isDownloadReadyFileCurrent(resourcePackage)) writeDownloadReadyFile(resourcePackage);
-            }
+            deleteDownloadReadyFile(resourcePackage);
+            downloadFileWithFallback(resourcePackage, zipFile);
+            writeDownloadReadyFile(resourcePackage);
             String samplePath = unzipStaticResources(zipFile, resourceDir, resourcePackage);
             writeExtractReadyFile(resourcePackage, resourceDir, samplePath);
         }
     }
 
     private File getDownloadZipFile(ResourcePackage resourcePackage) throws Exception {
+        File downloadDir = getResourceBaseDir();
+        if (!downloadDir.exists() && !downloadDir.mkdirs()) {
+            throw new IllegalStateException("Cannot create app download directory.");
+        }
+        return new File(downloadDir, resourcePackage.fileName);
+    }
+
+    private File getPublicDownloadZipFile(ResourcePackage resourcePackage) throws Exception {
         File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         if (!downloadDir.exists() && !downloadDir.mkdirs()) {
             throw new IllegalStateException("Cannot create Download directory.");
@@ -398,9 +410,24 @@ public class MainActivity extends AppCompatActivity {
         return new File(downloadDir, resourcePackage.fileName);
     }
 
+    @Nullable
+    private File findReusableDownloadZipFile(ResourcePackage resourcePackage) throws Exception {
+        File appZipFile = getDownloadZipFile(resourcePackage);
+        if (appZipFile.isFile()) return appZipFile;
+        File publicZipFile = getPublicDownloadZipFile(resourcePackage);
+        return publicZipFile.isFile() ? publicZipFile : null;
+    }
+
     private Uri waitForDownloadManagerZip(ResourcePackage resourcePackage) throws Exception {
         DownloadManager manager = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
         if (manager == null) throw new IllegalStateException("Download service is unavailable.");
+
+        File reusableZipFile = findReusableDownloadZipFile(resourcePackage);
+        if (reusableZipFile != null) {
+            ensureStoredDownloadUrl(resourcePackage);
+            if (!isDownloadReadyFileCurrent(resourcePackage)) writeDownloadReadyFile(resourcePackage);
+            return Uri.fromFile(reusableZipFile);
+        }
 
         long downloadId = getStoredDownloadId(resourcePackage);
         String downloadUrl = getStoredDownloadUrl(resourcePackage);
@@ -489,7 +516,7 @@ public class MainActivity extends AppCompatActivity {
         request.setAllowedOverMetered(true);
         request.setAllowedOverRoaming(true);
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, resourcePackage.fileName);
+        request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, resourcePackage.fileName);
         return manager.enqueue(request);
     }
 
